@@ -84,7 +84,9 @@ eclipse.Plugin = function(url, data, internalRegistry) {
 		if (services) {
 			services.forEach(function(service) {
 				var serviceProxy = _createServiceProxy(service);
-				_serviceRegistrations[service.serviceId] = internalRegistry.registerService(service.type, serviceProxy, service.properties);
+				var properties = JSON.parse(JSON.stringify(service.properties));
+				properties.__plugin__ = _self.getLocation();
+				_serviceRegistrations[service.serviceId] = internalRegistry.registerService(service.type, serviceProxy, properties);
 			});
 		}	
 	}
@@ -221,6 +223,10 @@ eclipse.Plugin = function(url, data, internalRegistry) {
 			_channel = internalRegistry.connect(url, _responseHandler);
 		}
 		return _deferredUpdate.promise;
+	};
+	
+	this.isLoaded = function() {
+		return _loaded;
 	};
 	
 	this._load = function(isInstall, optTimeout) {
