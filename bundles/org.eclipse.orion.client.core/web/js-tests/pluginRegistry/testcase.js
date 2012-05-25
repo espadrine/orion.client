@@ -11,7 +11,7 @@
 /*global define Worker*/
 
 
-define(["orion/assert", "orion/serviceregistry", "orion/pluginregistry"], function(assert, mServiceregistry, mPluginregistry) {
+define(["orion/assert", "orion/serviceregistry", "orion/pluginregistry", "orion/Deferred"], function(assert, mServiceregistry, mPluginregistry, Deferred) {
 	var tests = {};
 	
 	tests["test empty registry"] = function() {
@@ -179,8 +179,126 @@ define(["orion/assert", "orion/serviceregistry", "orion/pluginregistry"], functi
 		return promise;
 	};
 	
-	
-	
+	tests["test pluginregistry event lazyLoading"] = function() {
+		var storage = {};
+		var serviceRegistry = new mServiceregistry.ServiceRegistry();
+		var pluginRegistry = new mPluginregistry.PluginRegistry(serviceRegistry, storage);
+		
+		assert.equal(pluginRegistry.getPlugins().length, 0);
+		assert.equal(serviceRegistry.getServiceReferences().length, 0);		
+		
+		var promise = new Deferred();
+		pluginRegistry.installPlugin("testPlugin.html").then(function(plugin) {
+			// Dance required to trigger a lazy load: shutdown, recreate (reuse plugin storage), startup
+			pluginRegistry.shutdown();
+			serviceRegistry = new mServiceregistry.ServiceRegistry();
+			pluginRegistry = new mPluginregistry.PluginRegistry(serviceRegistry, storage);
+			pluginRegistry.addEventListener("lazyLoading", function(plugin) {
+				try {
+					assert.ok(!!plugin, "plugin not null");
+					assert.equal(plugin.getData().services.length, 1);
+					assert.equal(plugin.getData().services[0].properties.name, "echotest");
+					promise.resolve();
+				} catch(e) {
+					promise.reject(e);
+				}
+			});
+			pluginRegistry.startup(["testPlugin.html"]).then(function() {
+				// This service call should trigger lazyLoading listener
+				serviceRegistry.getService("test").test().then(function() {
+					plugin.uninstall();
+					pluginRegistry.shutdown();
+				});
+			});
+		});
+		return promise;
+	};
+
+	tests["test pluginregistry event lazyLoading only fired when lazy"] = function() {
+		var storage = {};
+		var serviceRegistry = new mServiceregistry.ServiceRegistry();
+		var pluginRegistry = new mPluginregistry.PluginRegistry(serviceRegistry, storage);
+
+		assert.equal(pluginRegistry.getPlugins().length, 0);
+		assert.equal(serviceRegistry.getServiceReferences().length, 0);		
+
+		var listenerCalled = false;
+		pluginRegistry.addEventListener("lazyLoading", function() {
+			listenerCalled = true;
+		});
+		return pluginRegistry.installPlugin("testPlugin.html").then(function(plugin) {
+			// Plugin already loaded here, so this is not lazy
+			return serviceRegistry.getService("test").test().then(function() {
+				assert.ok(!listenerCalled, "Listener not called");
+				pluginRegistry.shutdown();
+			});
+		});
+	};
+
+	// Test ordering guarantee:
+	// The testOrdering1() service call injected by our loading listener should call back before the original 
+	// testOrdering2() service call that triggered the listener.
+	tests["test pluginregistry event lazyLoading lazy-load service call ordering"] = function() {
+		var storage = {};
+		var serviceRegistry = new mServiceregistry.ServiceRegistry();
+		var pluginRegistry = new mPluginregistry.PluginRegistry(serviceRegistry, storage);
+
+		assert.equal(pluginRegistry.getPlugins().length, 0);
+		assert.equal(serviceRegistry.getServiceReferences().length, 0);		
+
+		return pluginRegistry.installPlugin("testPlugin2.html").then(function(plugin) {
+			// To trigger lazy load: shutdown, recreate (reuse plugin storage), startup
+			pluginRegistry.shutdown();
+			serviceRegistry = new mServiceregistry.ServiceRegistry();
+			pluginRegistry = new mPluginregistry.PluginRegistry(serviceRegistry, storage);
+			var listenerCalls = 0;
+			pluginRegistry.addEventListener("lazyLoading", function(plugin, data) {
+				assert.equal(++listenerCalls, 1);
+				// Our loading handler invokes testOrdering2 method of the plugin that is loading
+				var service = serviceRegistry.getService("testOrdering");
+				data.before = service.testOrdering1();
+			});
+			return pluginRegistry.startup(["testPlugin2.html"]).then(function() {
+				var service = serviceRegistry.getService("testOrdering");
+				// Kicks off the lazy-load process:
+				return service.testOrdering2().then(function() {
+					// At this point both testOrdering1() (injected) and testOrdering2() should've called back.
+					return service.getCallOrder().then(function(order) {
+						assert.deepEqual(order, ["testOrdering1", "testOrdering2"], "Service method call order is as expected");
+						plugin.uninstall();
+						pluginRegistry.shutdown();
+					});
+				});
+			});
+		});
+	};
+
+	tests["test pluginregistry events pluginAdded, pluginRemoved"] = function() {
+		var storage = {};
+		var serviceRegistry = new mServiceregistry.ServiceRegistry();
+		var pluginRegistry = new mPluginregistry.PluginRegistry(serviceRegistry, storage);
+		
+		assert.equal(pluginRegistry.getPlugins().length, 0);
+		assert.equal(serviceRegistry.getServiceReferences().length, 0);		
+		
+		var promise = new Deferred();
+		pluginRegistry.addEventListener("pluginAdded", function(plugin) {
+			try {
+				assert.ok(!!plugin, "plugin not null");
+				assert.equal(plugin.getData().services.length, 1);
+				assert.equal(plugin.getData().services[0].properties.name, "echotest");
+				promise.resolve();
+			} catch(e) {
+				promise.reject(e);
+			}
+		});
+		pluginRegistry.installPlugin("testPlugin.html").then(function(plugin) {
+			plugin.uninstall();
+			pluginRegistry.shutdown();
+		});
+		return promise;
+	};
+
 	tests["test 404 plugin"] = function() {
 		var storage = {};
 		var serviceRegistry = new mServiceregistry.ServiceRegistry();
@@ -199,7 +317,6 @@ define(["orion/assert", "orion/serviceregistry", "orion/pluginregistry"], functi
 		});
 		return promise;
 	};
-	
-	
+
 	return tests;
 });

@@ -27,11 +27,12 @@ eclipse.Plugin = function(url, data, internalRegistry) {
 	var _deferredLoad = new Deferred();
 	var _deferredUpdate = null;
 	var _loaded = false;
+	var _firedLazyLoading = false;
 	
 	var _currentMessageId = 0;
 	var _deferredResponses = {};
 	var _serviceRegistrations = {};
-		
+	
 	function _callService(serviceId, method, params, deferred) {
 		if (!_channel) {
 			throw new Error("plugin not connected");
@@ -47,6 +48,20 @@ eclipse.Plugin = function(url, data, internalRegistry) {
 		internalRegistry.postMessage(message, _channel);
 	}
 
+	function _lazyLoad(isLazyLoad) {
+		return function() {
+			if (isLazyLoad && !_firedLazyLoading) {
+				_firedLazyLoading = true;
+				// Give lazyLoading listeners a chance to queue up async work before the lazy service call is queued.
+				return internalRegistry.dispatchAndWait("lazyLoading", _self, true);
+			} else {
+				var d = new Deferred();
+				d.resolve();
+				return d;
+			}
+		};
+	}
+
 	function _createServiceProxy(service) {
 		var serviceProxy = {};
 		if (service.methods) {
@@ -54,7 +69,7 @@ eclipse.Plugin = function(url, data, internalRegistry) {
 				serviceProxy[method] = function() {
 					var params = Array.prototype.slice.call(arguments);
 					var d = new Deferred();
-					_self._load().then(function() {
+					_self._load().then(_lazyLoad(!_loaded)).then(function() {
 						_callService(service.serviceId, method, params, d);
 					});
 					return d.promise;
@@ -350,6 +365,22 @@ eclipse.PluginRegistry = function(serviceRegistry, opt_storage, opt_visible) {
 			},
 			postMessage: function(message, channel) {
 				channel.target.postMessage((channel.useStructuredClone ? message : JSON.stringify(message)), channel.url);
+			},
+			dispatchAndWait: function(type, plugin) {
+				var promises = [];
+				try {
+					var eventData = {};
+					_pluginEventTarget.dispatchEvent(type, plugin, eventData);
+					var promise = eventData.before;
+					if (promise && promise.then) {
+						promises.push(promise);
+					}
+				} catch (e) {
+					if (console) {
+						console.log(e);
+					}
+				}
+				return new Deferred().all(promises);
 			}
 	};
 	
